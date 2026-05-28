@@ -1445,10 +1445,28 @@ export class LlamaCpp implements LLM {
       `
     });
 
+    // PROBE B (pai-source qmd-expansion-eval, #135): prompt-lever experiment for
+    // non-Qwen expanders. Drops the Qwen3 `/no_think` control token (meaningless to
+    // LFM2.5/Granite — it leaks into the message and drives conversational drift) and
+    // adds a few-shot systemPrompt teaching one typed line of each kind. NOT for merge:
+    // re-tune per model family before any adoption. Revert to compare against zero-shot.
+    const FEW_SHOT_SYSTEM = [
+      "You expand a search query into typed lines for a hybrid search engine.",
+      "Output ONLY these three lines, exactly one of each type, in this order, nothing else:",
+      "lex: <2-6 keywords or key phrases, no full sentence>",
+      "vec: <one sentence paraphrasing the information need>",
+      "hyde: <one or two sentences of a plausible answer passage>",
+      "",
+      "Example:",
+      "Query: kubernetes pod restart loop",
+      "lex: kubernetes pod crashloopbackoff restart",
+      "vec: why a kubernetes pod keeps restarting repeatedly",
+      "hyde: A pod enters CrashLoopBackOff when its container repeatedly exits with an error; inspect the container logs and the liveness probe configuration.",
+    ].join("\n");
     const intent = options.intent;
     const prompt = intent
-      ? `/no_think Expand this search query: ${query}\nQuery intent: ${intent}`
-      : `/no_think Expand this search query: ${query}`;
+      ? `Expand this search query: ${query}\nQuery intent: ${intent}`
+      : `Expand this search query: ${query}`;
 
     // Create a bounded context for expansion to prevent large default VRAM allocations.
     const genContext = await this.generateModel!.createContext({
@@ -1456,7 +1474,7 @@ export class LlamaCpp implements LLM {
     });
     const sequence = genContext.getSequence();
     const { LlamaChatSession } = await loadNodeLlamaCpp();
-    const session = new LlamaChatSession({ contextSequence: sequence });
+    const session = new LlamaChatSession({ contextSequence: sequence, systemPrompt: FEW_SHOT_SYSTEM });
 
     try {
       // Qwen3 recommended settings for non-thinking mode:
