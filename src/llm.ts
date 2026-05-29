@@ -1474,7 +1474,15 @@ export class LlamaCpp implements LLM {
     });
     const sequence = genContext.getSequence();
     const { LlamaChatSession } = await loadNodeLlamaCpp();
-    const session = new LlamaChatSession({ contextSequence: sequence, systemPrompt: FEW_SHOT_SYSTEM });
+    // PROBE B toggle (pai-source qmd-expansion-eval, #135): QMD_EXPAND_NO_FEWSHOT
+    // disables the few-shot system prompt to measure zero-shot — the native regime
+    // for SFT'd models trained without it. Pass "" (not undefined) so node-llama-cpp
+    // emits an empty system turn rather than its generic assistant persona default.
+    const noFewShot = process.env.QMD_EXPAND_NO_FEWSHOT === "1" || process.env.QMD_EXPAND_NO_FEWSHOT === "true";
+    const session = new LlamaChatSession({
+      contextSequence: sequence,
+      systemPrompt: noFewShot ? "" : FEW_SHOT_SYSTEM,
+    });
 
     try {
       // Qwen3 recommended settings for non-thinking mode:
