@@ -1436,9 +1436,15 @@ export class LlamaCpp implements LLM {
     const includeLexical = options.includeLexical ?? true;
     const context = options.context;
 
+    // PROBE C (pai-source qmd-expansion-eval, #135): bound the line count to curb
+    // runaway repetition seen with smaller SFT-only expanders (e.g. Granite emitting
+    // ~28 near-duplicate lines/query until maxTokens, collapsing reward diversity).
+    // QMD_EXPAND_MAX_LINES=N caps the grammar at `line{1,N}`; unset keeps `line+`.
+    const maxLines = Number.parseInt(process.env.QMD_EXPAND_MAX_LINES ?? "", 10);
+    const rootRule = Number.isInteger(maxLines) && maxLines > 0 ? `line{1,${maxLines}}` : "line+";
     const grammar = await llama.createGrammar({
       grammar: `
-        root ::= line+
+        root ::= ${rootRule}
         line ::= type ": " content "\\n"
         type ::= "lex" | "vec" | "hyde"
         content ::= [^\\n]+
@@ -1488,12 +1494,15 @@ export class LlamaCpp implements LLM {
       // Qwen3 recommended settings for non-thinking mode:
       // temp=0.7, topP=0.8, topK=20, presence_penalty for repetition
       // DO NOT use greedy decoding (temp=0) - causes infinite loops
+      // PROBE C: QMD_EXPAND_GREEDY=1 forces greedy decode (IBM ships Granite greedy by
+      // default). Safe to combine with QMD_EXPAND_MAX_LINES — the bounded grammar
+      // prevents the infinite-loop failure mode the comment above warns about.
+      const greedy = process.env.QMD_EXPAND_GREEDY === "1" || process.env.QMD_EXPAND_GREEDY === "true";
       const result = await session.prompt(prompt, {
         grammar,
         maxTokens: 600,
-        temperature: 0.7,
-        topK: 20,
-        topP: 0.8,
+        temperature: greedy ? 0 : 0.7,
+        ...(greedy ? {} : { topK: 20, topP: 0.8 }),
         repeatPenalty: {
           lastTokens: 64,
           presencePenalty: 0.5,
