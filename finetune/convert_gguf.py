@@ -91,13 +91,13 @@ def main():
         sft_model = args.sft or preset["sft"]
         grpo_model = args.grpo or preset["grpo"]
         output_repo = args.output or preset["output"]
-    elif args.base and args.sft and args.grpo and args.output:
+    elif args.base and args.sft and args.output:
         base_model = args.base
         sft_model = args.sft
-        grpo_model = args.grpo
+        grpo_model = args.grpo  # optional — None means SFT-only (no GRPO merge)
         output_repo = args.output
     else:
-        parser.error("Either --size or all of --base/--sft/--grpo/--output are required")
+        parser.error("Either --size or all of --base/--sft/--output are required (--grpo optional)")
 
     model_name = output_repo.split("/")[-1].replace("-gguf", "")
     print(f"QMD GGUF Conversion: {model_name}")
@@ -124,9 +124,12 @@ def main():
     model = PeftModel.from_pretrained(model, sft_model)
     model = model.merge_and_unload()
 
-    print(f"Step 3: Merging GRPO adapter {grpo_model}...")
-    model = PeftModel.from_pretrained(model, grpo_model)
-    model = model.merge_and_unload()
+    if grpo_model:
+        print(f"Step 3: Merging GRPO adapter {grpo_model}...")
+        model = PeftModel.from_pretrained(model, grpo_model)
+        model = model.merge_and_unload()
+    else:
+        print("Step 3: No GRPO adapter provided — SFT-only conversion.")
 
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
 
@@ -189,7 +192,12 @@ def main():
             api.upload_file(path_or_fileobj=qfile,
                             path_in_repo=f"{model_name}-{qtype.lower()}.gguf", repo_id=output_repo)
 
-        # Upload README
+        # Upload README. GRPO line is conditional; the prompt format is described
+        # in terms of the model's own chat template rather than hardcoding Qwen
+        # control tokens. /no_think is a Qwen-only non-thinking switch and is
+        # meaningless to other families (e.g. Granite), so only emit it for Qwen.
+        grpo_line = f"- **GRPO:** {grpo_model}\n" if grpo_model else ""
+        think_prefix = "/no_think " if "qwen" in base_model.lower() else ""
         readme = f"""---
 base_model: {base_model}
 tags: [gguf, llama.cpp, quantized, query-expansion, qmd]
@@ -201,14 +209,15 @@ GGUF conversion of the QMD Query Expansion model.
 ## Details
 - **Base:** {base_model}
 - **SFT:** {sft_model}
-- **GRPO:** {grpo_model}
-- **Task:** Query expansion (lex/vec/hyde format)
+{grpo_line}- **Task:** Query expansion (lex/vec/hyde format)
 
 ## Prompt Format
+
+Served through the model's own chat template (system + user turns). The system
+turn teaches the typed-line format; the user turn carries the query:
 ```
-<|im_start|>user
-/no_think Expand this search query: your query here<|im_end|>
-<|im_start|>assistant
+system: Expand a search query into typed lines (lex/vec/hyde) for a hybrid search engine.
+user: {think_prefix}Expand this search query: your query here
 ```
 """
         api.upload_file(path_or_fileobj=readme.encode(),
