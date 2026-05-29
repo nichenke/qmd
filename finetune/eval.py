@@ -55,10 +55,23 @@ def load_model(model_path: str):
     tokenizer.padding_side = "left"
 
     config = AutoConfig.from_pretrained(base_model)
-    config.tie_word_embeddings = False
+    # NOTE: do NOT force tie_word_embeddings=False here. Both Granite-3.3 and Qwen3-1.7B
+    # tie their embeddings (lm_head == embed_tokens); forcing untied makes transformers
+    # expect a separate lm_head.weight that the checkpoint doesn't ship and then RANDOMLY
+    # initialises it — silently corrupting generation. Respect the model's native setting.
+    # Portable device selection — script was CUDA-only (device_map={"": 0}); this lets
+    # it run on Apple Silicon (mps) and CPU too. bf16 matches training precision on
+    # accelerators; CPU uses float32 for numerical stability.
+    if torch.cuda.is_available():
+        device, dtype = "cuda", torch.bfloat16
+    elif torch.backends.mps.is_available():
+        device, dtype = "mps", torch.bfloat16
+    else:
+        device, dtype = "cpu", torch.float32
+    print(f"Using device: {device} ({dtype})", file=sys.stderr)
     model = AutoModelForCausalLM.from_pretrained(
-        base_model, dtype=torch.bfloat16, device_map={"": 0}, config=config
-    )
+        base_model, dtype=dtype, config=config
+    ).to(device)
     if model.generation_config is not None:
         model.generation_config.do_sample = False
         model.generation_config.temperature = None
@@ -80,9 +93,15 @@ def generate_batch(
     """Generate expansions for a batch of queries."""
     import torch
 
+    # Qwen3 was trained with the /no_think control token; Granite (and other families)
+    # were not — injecting it for them leaks literal text into the prompt and breaks
+    # train/inference parity. Gate it on the model family so the same script fairly
+    # evaluates each model in its own trained prompt format.
+    _name = (getattr(tokenizer, "name_or_path", "") or "").lower()
+    prefix = "/no_think " if "qwen" in _name else ""
     prompts = [
         tokenizer.apply_chat_template(
-            [{"role": "user", "content": f"/no_think Expand this search query: {q}"}],
+            [{"role": "user", "content": f"{prefix}Expand this search query: {q}"}],
             tokenize=False,
             add_generation_prompt=True,
         )
