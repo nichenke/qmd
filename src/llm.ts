@@ -1442,14 +1442,26 @@ export class LlamaCpp implements LLM {
     // QMD_EXPAND_MAX_LINES=N caps the grammar at `line{1,N}`; unset keeps `line+`.
     const maxLines = Number.parseInt(process.env.QMD_EXPAND_MAX_LINES ?? "", 10);
     const rootRule = Number.isInteger(maxLines) && maxLines > 0 ? `line{1,${maxLines}}` : "line+";
-    const grammar = await llama.createGrammar({
-      grammar: `
+    // PROBE C (structured): QMD_EXPAND_STRUCTURED guarantees exactly 1 hyde + 1-3 lex
+    // + 1-2 vec in one of the two orders the training data uses (hyde>lex>vec 59%,
+    // lex>vec>hyde 41%) — restores HyDE coverage that greedy + the flat line-cap
+    // otherwise drops. Overrides QMD_EXPAND_MAX_LINES when set.
+    const structured = process.env.QMD_EXPAND_STRUCTURED === "1" || process.env.QMD_EXPAND_STRUCTURED === "true";
+    const grammarText = structured
+      ? `
+        root ::= (hydeline lexline{1,3} vecline{1,2}) | (lexline{1,3} vecline{1,2} hydeline)
+        lexline ::= "lex: " content "\\n"
+        vecline ::= "vec: " content "\\n"
+        hydeline ::= "hyde: " content "\\n"
+        content ::= [^\\n]+
+      `
+      : `
         root ::= ${rootRule}
         line ::= type ": " content "\\n"
         type ::= "lex" | "vec" | "hyde"
         content ::= [^\\n]+
-      `
-    });
+      `;
+    const grammar = await llama.createGrammar({ grammar: grammarText });
 
     // PROBE B (pai-source qmd-expansion-eval, #135): prompt-lever experiment for
     // non-Qwen expanders. Drops the Qwen3 `/no_think` control token (meaningless to
