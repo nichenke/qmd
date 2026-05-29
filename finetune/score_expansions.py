@@ -22,11 +22,22 @@ def main() -> int:
     if len(sys.argv) != 2:
         print("usage: score_expansions.py <expansions.jsonl>", file=sys.stderr)
         return 2
-    rows = [
-        json.loads(line)
-        for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
+    # Robust load: tsx/node-llama-cpp can leak a download spinner onto stdout on a
+    # first-time model fetch, so skip any line that is not a valid {query,expansion}
+    # JSON object, and dedupe by query (keep first) in case a query was re-emitted.
+    rows = []
+    seen = set()
+    for line in Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if "query" in obj and "expansion" in obj and obj["query"] not in seen:
+            seen.add(obj["query"])
+            rows.append(obj)
 
     scores = []
     print(f"{'query':<50}{'score%':>8}  breakdown")
